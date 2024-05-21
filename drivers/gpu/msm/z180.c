@@ -1,4 +1,4 @@
-/* Copyright (c) 2002,2007-2013, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2002,2007-2014, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -219,7 +219,7 @@ static irqreturn_t z180_irq_handler(struct kgsl_device *device)
 			count &= 255;
 			z180_dev->timestamp += count;
 
-			queue_work(device->work_queue, &device->event_work);
+			queue_work(device->work_queue, &device->ts_expired_ws);
 			wake_up_interruptible(&device->wait_queue);
 		}
 	}
@@ -451,7 +451,7 @@ z180_cmdstream_issueibcmds(struct kgsl_device_private *dev_priv,
 			     "Cannot make kernel mapping for gpuaddr 0x%x\n",
 			     cmd);
 		result = -EINVAL;
-		goto error;
+		goto error_put;
 	}
 
 	KGSL_CMD_INFO(device, "ctxt %d ibaddr 0x%08x sizedwords %d\n",
@@ -480,7 +480,7 @@ z180_cmdstream_issueibcmds(struct kgsl_device_private *dev_priv,
 	if (result < 0) {
 		KGSL_CMD_ERR(device, "wait_event_interruptible_timeout "
 			"failed: %ld\n", result);
-		goto error;
+		goto error_put;
 	}
 	result = 0;
 
@@ -512,6 +512,8 @@ z180_cmdstream_issueibcmds(struct kgsl_device_private *dev_priv,
 
 	z180_cmdwindow_write(device, ADDR_VGV3_CONTROL, cmd);
 	z180_cmdwindow_write(device, ADDR_VGV3_CONTROL, 0);
+error_put:
+	kgsl_mem_entry_put(entry);
 error:
 	kgsl_trace_issueibcmds(device, context->id, cmdbatch,
 		*timestamp, cmdbatch ? cmdbatch->flags : 0, result, 0);

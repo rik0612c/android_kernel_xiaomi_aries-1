@@ -455,8 +455,6 @@ static int kgsl_page_alloc_map_kernel(struct kgsl_memdesc *memdesc)
 		/* create a list of pages to call vmap */
 		pages = vmalloc(npages * sizeof(struct page *));
 		if (!pages) {
-			KGSL_CORE_ERR("vmalloc(%d) failed\n",
-				npages * sizeof(struct page *));
 			ret = -ENOMEM;
 			goto done;
 		}
@@ -580,7 +578,7 @@ _kgsl_sharedmem_page_alloc(struct kgsl_memdesc *memdesc,
 			size_t size)
 {
 	int order, ret = 0;
-	int page_size, sglen_alloc, sglen = 0;
+	int sglen_alloc, sglen = 0;
 	void *ptr;
 	size_t len;
 	unsigned int align;
@@ -590,12 +588,6 @@ _kgsl_sharedmem_page_alloc(struct kgsl_memdesc *memdesc,
 		return -EINVAL;
 
 	align = (memdesc->flags & KGSL_MEMALIGN_MASK) >> KGSL_MEMALIGN_SHIFT;
-
-	page_size = (align >= ilog2(SZ_64K) && size >= SZ_64K)
-			? SZ_64K : PAGE_SIZE;
-	/* update align flags for what we actually use */
-	if (page_size != PAGE_SIZE)
-		kgsl_memdesc_set_align(memdesc, ilog2(page_size));
 
 	/*
 	 * There needs to be enough room in the sg structure to be able to
@@ -623,33 +615,10 @@ _kgsl_sharedmem_page_alloc(struct kgsl_memdesc *memdesc,
 
 	while (len > 0) {
 		struct page *page;
-		unsigned int gfp_mask = __GFP_HIGHMEM;
-		int j;
 
-		/* don't waste space at the end of the allocation*/
-		if (len < page_size)
-			page_size = PAGE_SIZE;
-
-		/*
-		 * Don't do some of the more aggressive memory recovery
-		 * techniques for large order allocations
-		 */
-		if (page_size != PAGE_SIZE)
-			gfp_mask |= __GFP_COMP | __GFP_NORETRY |
-				__GFP_NO_KSWAPD | __GFP_NOWARN;
-		else
-			gfp_mask |= GFP_KERNEL;
-
-		gfp_mask |= __GFP_ZERO;
-
-		page = alloc_pages(gfp_mask, get_order(page_size));
+		page = alloc_page(GFP_KERNEL | __GFP_HIGHMEM | __GFP_ZERO);
 
 		if (page == NULL) {
-			if (page_size != PAGE_SIZE) {
-				page_size = PAGE_SIZE;
-				continue;
-			}
-
 			/*
 			 * Update sglen and memdesc size,as requested allocation
 			 * not served fully. So that they can be correctly freed
@@ -659,22 +628,19 @@ _kgsl_sharedmem_page_alloc(struct kgsl_memdesc *memdesc,
 			memdesc->size = (size - len);
 
 			KGSL_CORE_ERR(
-				"Out of memory: only allocated %dKB of %dKB requested\n",
+				"Out of memory: only allocated %zuKB of %zuKB requested\n",
 				(size - len) >> 10, size >> 10);
 
 			ret = -ENOMEM;
 			goto done;
 		}
 
-		for (j = 0; j < page_size >> PAGE_SHIFT; j++) {
-			struct page *p = nth_page(page, j);
-			ptr = kmap_atomic(p);
-			dmac_flush_range(ptr, ptr + PAGE_SIZE);
-			kunmap_atomic(ptr);
-		}
+		ptr = kmap_atomic(page);
+		dmac_flush_range(ptr, ptr + PAGE_SIZE);
+		kunmap_atomic(ptr);
 
-		sg_set_page(&memdesc->sg[sglen++], page, page_size, 0);
-		len -= page_size;
+		sg_set_page(&memdesc->sg[sglen++], page, PAGE_SIZE, 0);
+		len -= PAGE_SIZE;
 	}
 
 	memdesc->sglen = sglen;
@@ -746,7 +712,6 @@ kgsl_sharedmem_alloc_coherent(struct kgsl_memdesc *memdesc, size_t size)
 	memdesc->hostptr = dma_alloc_coherent(NULL, size, &memdesc->physaddr,
 					      GFP_KERNEL);
 	if (memdesc->hostptr == NULL) {
-		KGSL_CORE_ERR("dma_alloc_coherent(%d) failed\n", size);
 		result = -ENOMEM;
 		goto err;
 	}
@@ -801,8 +766,6 @@ kgsl_sharedmem_readl(const struct kgsl_memdesc *memdesc,
 	WARN_ON(offsetbytes + sizeof(uint32_t) > memdesc->size);
 	if (offsetbytes + sizeof(uint32_t) > memdesc->size)
 		return -ERANGE;
-
-	rmb();
 	src = (uint32_t *)(memdesc->hostptr + offsetbytes);
 	*dst = *src;
 	return 0;
@@ -829,9 +792,6 @@ kgsl_sharedmem_writel(struct kgsl_device *device,
 		src, sizeof(uint32_t));
 	dst = (uint32_t *)(memdesc->hostptr + offsetbytes);
 	*dst = src;
-
-	wmb();
-
 	return 0;
 }
 EXPORT_SYMBOL(kgsl_sharedmem_writel);

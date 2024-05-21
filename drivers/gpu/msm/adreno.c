@@ -18,6 +18,7 @@
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/delay.h>
+#include <linux/of_coresight.h>
 
 #include <mach/socinfo.h>
 #include <mach/msm_bus_board.h>
@@ -194,7 +195,7 @@ static const struct {
 		"a225_pm4.fw", "a225_pfp.fw", &adreno_a2xx_gpudev,
 		1536, 768, 3, SZ_512K, 0x225011, 0x225002 },
 	/* A3XX doesn't use the pix_shader_start */
-	{ ADRENO_REV_A305, 3, 0, 5, ANY_ID,
+	{ ADRENO_REV_A305, 3, 0, 5, 0,
 		"a300_pm4.fw", "a300_pfp.fw", &adreno_a3xx_gpudev,
 		512, 0, 2, SZ_256K, 0x3FF037, 0x3FF016 },
 	/* A3XX doesn't use the pix_shader_start */
@@ -1324,6 +1325,7 @@ done:
 static int adreno_of_get_iommu(struct device_node *parent,
 	struct kgsl_device_platform_data *pdata)
 {
+	int result = -EINVAL;
 	struct device_node *node, *child;
 	struct kgsl_device_iommu_data *data = NULL;
 	struct kgsl_iommu_ctx *ctxs = NULL;
@@ -1336,7 +1338,7 @@ static int adreno_of_get_iommu(struct device_node *parent,
 
 	data = kzalloc(sizeof(*data), GFP_KERNEL);
 	if (data == NULL) {
-		KGSL_CORE_ERR("kzalloc(%d) failed\n", sizeof(*data));
+		result = -ENOMEM;
 		goto err;
 	}
 
@@ -1357,8 +1359,7 @@ static int adreno_of_get_iommu(struct device_node *parent,
 		GFP_KERNEL);
 
 	if (ctxs == NULL) {
-		KGSL_CORE_ERR("kzalloc(%d) failed\n",
-			data->iommu_ctx_count * sizeof(struct kgsl_iommu_ctx));
+		result = -ENOMEM;
 		goto err;
 	}
 
@@ -1397,7 +1398,7 @@ err:
 	kfree(ctxs);
 	kfree(data);
 
-	return -EINVAL;
+	return result;
 }
 
 static int adreno_of_get_pdata(struct platform_device *pdev)
@@ -1422,7 +1423,6 @@ static int adreno_of_get_pdata(struct platform_device *pdev)
 
 	pdata = kzalloc(sizeof(*pdata), GFP_KERNEL);
 	if (pdata == NULL) {
-		KGSL_CORE_ERR("kzalloc(%d) failed\n", sizeof(*pdata));
 		ret = -ENOMEM;
 		goto err;
 	}
@@ -1438,7 +1438,7 @@ static int adreno_of_get_pdata(struct platform_device *pdev)
 
 	if (adreno_of_read_property(pdev->dev.of_node, "qcom,idle-timeout",
 		&pdata->idle_timeout))
-		pdata->idle_timeout = 80;
+		pdata->idle_timeout = HZ/12;
 
 	pdata->strtstp_sleepwake = of_property_read_bool(pdev->dev.of_node,
 						"qcom,strtstp-sleepwake");
@@ -1465,6 +1465,9 @@ static int adreno_of_get_pdata(struct platform_device *pdev)
 	ret = adreno_of_get_iommu(pdev->dev.of_node, pdata);
 	if (ret)
 		goto err;
+
+	pdata->coresight_pdata = of_get_coresight_platform_data(&pdev->dev,
+			pdev->dev.of_node);
 
 	pdev->dev.platform_data = pdata;
 	return 0;
@@ -1573,6 +1576,8 @@ adreno_probe(struct platform_device *pdev)
 	device->flags &= ~KGSL_FLAGS_SOFT_RESET;
 	pdata = kgsl_device_get_drvdata(device);
 
+	adreno_coresight_init(pdev);
+
 	return 0;
 
 error_close_device:
@@ -1592,6 +1597,8 @@ static int __devexit adreno_remove(struct platform_device *pdev)
 
 	device = (struct kgsl_device *)pdev->id_entry->driver_data;
 	adreno_dev = ADRENO_DEVICE(device);
+
+	adreno_coresight_remove(pdev);
 
 	kgsl_pwrscale_detach_policy(device);
 	kgsl_pwrscale_close(device);
@@ -2376,7 +2383,7 @@ static int adreno_setproperty(struct kgsl_device_private *dev_priv,
  * Return true if the RBBM status register for the GPU type indicates that the
  * hardware is idle
  */
-static bool adreno_hw_isidle(struct kgsl_device *device)
+bool adreno_hw_isidle(struct kgsl_device *device)
 {
 	unsigned int reg_rbbm_status;
 	struct adreno_device *adreno_dev = ADRENO_DEVICE(device);
@@ -2484,6 +2491,12 @@ bool adreno_isidle(struct kgsl_device *device)
 		return true;
 
 	rptr = adreno_get_rptr(&adreno_dev->ringbuffer);
+
+	/*
+	 * wptr is updated when we add commands to ringbuffer, add a barrier
+	 * to make sure updated wptr is compared to rptr
+	 */
+	smp_mb();
 
 	if (rptr == adreno_dev->ringbuffer.wptr)
 		return adreno_hw_isidle(device);
@@ -2670,6 +2683,7 @@ uint8_t *adreno_convertaddr(struct kgsl_device *device, phys_addr_t pt_base,
 	return memdesc ? kgsl_gpuaddr_to_vaddr(memdesc, gpuaddr) : NULL;
 }
 
+
 /**
  * adreno_read - General read function to read adreno device memory
  * @device - Pointer to the GPU device struct (for adreno device)
@@ -2817,6 +2831,8 @@ static unsigned int adreno_readtimestamp(struct kgsl_device *device,
 		break;
 	}
 
+	rmb();
+
 	return timestamp;
 }
 
@@ -2913,12 +2929,15 @@ static void adreno_power_stats(struct kgsl_device *device,
 	unsigned int cycles = 0;
 
 	/*
-	 * Get the busy cycles counted since the counter was last reset.
 	 * If we're not currently active, there shouldn't have been
 	 * any cycles since the last time this function was called.
 	 */
-	if (device->state == KGSL_STATE_ACTIVE)
-		cycles = adreno_dev->gpudev->busy_cycles(adreno_dev);
+
+	if (device->state != KGSL_STATE_ACTIVE)
+		return;
+
+	/* Get the busy cycles counted since the counter was last reset */
+	adreno_dev->gpudev->busy_cycles(adreno_dev);
 
 	/*
 	 * In order to calculate idle you have to have run the algorithm

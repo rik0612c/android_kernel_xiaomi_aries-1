@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2013, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2011-2013,2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -67,7 +67,7 @@ sysfs_show_ptpool_ptsize(struct kobject *kobj,
 {
 	struct kgsl_ptpool *pool = (struct kgsl_ptpool *)
 					kgsl_driver.ptpool;
-	return snprintf(buf, PAGE_SIZE, "%d\n", pool->ptsize);
+	return snprintf(buf, PAGE_SIZE, "%zu\n", pool->ptsize);
 }
 
 static struct kobj_attribute attr_ptpool_entries = {
@@ -115,15 +115,13 @@ _kgsl_ptpool_add_entries(struct kgsl_ptpool *pool, int count, int dynamic)
 	BUG_ON(count == 0);
 
 	if (get_order(size) >= MAX_ORDER) {
-		KGSL_CORE_ERR("ptpool allocation is too big: %d\n", size);
+		KGSL_CORE_ERR("ptpool allocation is too big: %zu\n", size);
 		return -EINVAL;
 	}
 
 	chunk = kzalloc(sizeof(*chunk), GFP_KERNEL);
-	if (chunk == NULL) {
-		KGSL_CORE_ERR("kzalloc(%d) failed\n", sizeof(*chunk));
+	if (chunk == NULL)
 		return -ENOMEM;
-	}
 
 	chunk->size = size;
 	chunk->count = count;
@@ -132,18 +130,13 @@ _kgsl_ptpool_add_entries(struct kgsl_ptpool *pool, int count, int dynamic)
 	chunk->data = dma_alloc_coherent(NULL, size,
 					 &chunk->phys, GFP_KERNEL);
 
-	if (chunk->data == NULL) {
-		KGSL_CORE_ERR("dma_alloc_coherent(%d) failed\n", size);
+	if (chunk->data == NULL)
 		goto err;
-	}
 
 	chunk->bitmap = kzalloc(BITS_TO_LONGS(count) * 4, GFP_KERNEL);
 
-	if (chunk->bitmap == NULL) {
-		KGSL_CORE_ERR("kzalloc(%d) failed\n",
-			BITS_TO_LONGS(count) * 4);
+	if (chunk->bitmap == NULL)
 		goto err_dma;
-	}
 
 	list_add_tail(&chunk->list, &pool->list);
 
@@ -652,7 +645,7 @@ kgsl_gpummu_unmap(struct kgsl_pagetable *pt,
 		/* check if PTE exists */
 		if (!kgsl_pt_map_get(gpummu_pt, pte))
 			KGSL_CORE_ERR("pt entry %x is already "
-			"unmapped for pagetable %p\n", pte, gpummu_pt);
+			"unmapped for pagetable %pK\n", pte, gpummu_pt);
 #endif
 		kgsl_pt_map_set(gpummu_pt, pte, GSL_PT_PAGE_DIRTY);
 		superpte = pte - (pte & (GSL_PT_SUPER_PTE - 1));

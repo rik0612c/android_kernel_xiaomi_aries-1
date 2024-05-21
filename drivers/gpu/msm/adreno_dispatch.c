@@ -87,15 +87,24 @@ static void fault_detect_read(struct kgsl_device *device)
 static inline bool _isidle(struct kgsl_device *device)
 {
 	struct adreno_device *adreno_dev = ADRENO_DEVICE(device);
-	unsigned int ts;
+	unsigned int ts, i;
+
+	if (!kgsl_pwrctrl_isenabled(device))
+		goto ret;
 
 	ts = kgsl_readtimestamp(device, NULL, KGSL_TIMESTAMP_RETIRED);
 
-	if (adreno_isidle(device) == true &&
-		(ts >= adreno_dev->ringbuffer.global_ts))
-		return true;
+	/* If GPU HW status is idle return true */
+	if (adreno_hw_isidle(device) ||
+			(ts == adreno_dev->ringbuffer.global_ts))
+		goto ret;
 
 	return false;
+
+ret:
+	for (i = 0; i < FT_DETECT_REGS_COUNT; i++)
+		fault_detect_regs[i] = 0;
+	return true;
 }
 
 /**
@@ -845,8 +854,8 @@ static void remove_invalidated_cmdbatches(struct kgsl_device *device,
 			replay[i] = NULL;
 
 			mutex_lock(&device->mutex);
-			kgsl_cancel_events_timestamp(device,
-				&cmd->context->events, cmd->timestamp);
+			kgsl_cancel_events_timestamp(device, cmd->context,
+				cmd->timestamp);
 			mutex_unlock(&device->mutex);
 
 			kgsl_cmdbatch_destroy(cmd);
@@ -1420,7 +1429,7 @@ static void adreno_dispatcher_work(struct work_struct *work)
 	 */
 	if (count && dispatcher->inflight == 0) {
 		mutex_lock(&device->mutex);
-		queue_work(device->work_queue, &device->event_work);
+		queue_work(device->work_queue, &device->ts_expired_ws);
 		mutex_unlock(&device->mutex);
 	}
 

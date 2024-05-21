@@ -86,6 +86,15 @@ enum adreno_gpurev {
 	ADRENO_REV_A420 = 420,
 };
 
+enum coresight_debug_reg {
+	DEBUG_BUS_CTL,
+	TRACE_STOP_CNT,
+	TRACE_START_CNT,
+	TRACE_PERIOD_CNT,
+	TRACE_CMD,
+	TRACE_BUS_CTL,
+};
+
 #define ADRENO_SOFT_FAULT BIT(0)
 #define ADRENO_HARD_FAULT BIT(1)
 #define ADRENO_TIMEOUT_FAULT BIT(2)
@@ -372,6 +381,10 @@ struct adreno_gpudev {
 		unsigned int counter, unsigned int countable);
 	uint64_t (*perfcounter_read)(struct adreno_device *adreno_dev,
 		unsigned int group, unsigned int counter);
+	int (*coresight_enable) (struct kgsl_device *device);
+	void (*coresight_disable) (struct kgsl_device *device);
+	void (*coresight_config_debug_reg) (struct kgsl_device *device,
+			int debug_reg, unsigned int val);
 	void (*soft_reset)(struct adreno_device *device);
 	void (*postmortem_dump)(struct adreno_device *adreno_dev);
 };
@@ -402,8 +415,7 @@ struct log_field {
 #define KGSL_FT_PAGEFAULT_GPUHALT_ENABLE     BIT(1)
 #define KGSL_FT_PAGEFAULT_LOG_ONE_PER_PAGE   BIT(2)
 #define KGSL_FT_PAGEFAULT_LOG_ONE_PER_INT    BIT(3)
-#define KGSL_FT_PAGEFAULT_DEFAULT_POLICY     (KGSL_FT_PAGEFAULT_INT_ENABLE + \
-					KGSL_FT_PAGEFAULT_GPUHALT_ENABLE)
+#define KGSL_FT_PAGEFAULT_DEFAULT_POLICY     KGSL_FT_PAGEFAULT_INT_ENABLE
 
 #define ADRENO_FT_TYPES \
 	{ BIT(KGSL_FT_OFF), "off" }, \
@@ -442,12 +454,14 @@ extern const unsigned int a4xx_registers_count;
 
 extern unsigned int ft_detect_regs[];
 
+int adreno_coresight_enable(struct coresight_device *csdev);
+void adreno_coresight_disable(struct coresight_device *csdev);
+void adreno_coresight_remove(struct platform_device *pdev);
+int adreno_coresight_init(struct platform_device *pdev);
+
+bool adreno_hw_isidle(struct kgsl_device *device);
 int adreno_idle(struct kgsl_device *device);
 bool adreno_isidle(struct kgsl_device *device);
-
-void adreno_shadermem_regread(struct kgsl_device *device,
-						unsigned int offsetwords,
-						unsigned int *value);
 
 void adreno_shadermem_regread(struct kgsl_device *device,
 						unsigned int offsetwords,
