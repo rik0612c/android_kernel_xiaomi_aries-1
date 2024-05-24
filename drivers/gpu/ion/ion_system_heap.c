@@ -2,7 +2,7 @@
  * drivers/gpu/ion/ion_system_heap.c
  *
  * Copyright (C) 2011 Google, Inc.
- * Copyright (c) 2011-2012, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2015, The Linux Foundation. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -53,7 +53,7 @@ static int ion_system_heap_allocate(struct ion_heap *heap,
 		goto err0;
 	for_each_sg(table->sgl, sg, table->nents, i) {
 		struct page *page;
-		page = alloc_page(GFP_KERNEL|__GFP_ZERO);
+		page = alloc_page(GFP_KERNEL);
 		if (!page)
 			goto err1;
 		sg_set_page(sg, page, PAGE_SIZE, 0);
@@ -110,6 +110,9 @@ void *ion_system_heap_map_kernel(struct ion_heap *heap,
 		struct page **pages = kmalloc(
 					sizeof(struct page *) * table->nents,
 					GFP_KERNEL);
+
+		if (!pages)
+			return ERR_PTR(-ENOMEM);
 
 		for_each_sg(table->sgl, sg, table->nents, i)
 			pages[i] = sg_page(sg);
@@ -238,7 +241,7 @@ int ion_system_heap_cache_ops(struct ion_heap *heap, struct ion_buffer *buffer,
 }
 
 static int ion_system_print_debug(struct ion_heap *heap, struct seq_file *s,
-				  const struct list_head *unused)
+				  const struct rb_root *unused)
 {
 	seq_printf(s, "total bytes currently allocated: %lx\n",
 			(unsigned long) atomic_read(&system_heap_allocated));
@@ -297,15 +300,16 @@ int ion_system_heap_map_iommu(struct ion_buffer *buffer,
 			      buffer->size, prot);
 
 	if (ret) {
-		pr_err("%s: could not map %lx in domain %p\n",
+		pr_err("%s: could not map %lx in domain %pK\n",
 			__func__, data->iova_addr, domain);
 		goto out1;
 	}
 
 	extra_iova_addr = data->iova_addr + buffer->size;
 	if (extra) {
-		ret = msm_iommu_map_extra(domain, extra_iova_addr, extra, SZ_4K,
-					  prot);
+		unsigned long phys_addr = sg_phys(table->sgl);
+		ret = msm_iommu_map_extra(domain, extra_iova_addr, phys_addr,
+					extra, SZ_4K, prot);
 		if (ret)
 			goto out2;
 	}
@@ -444,7 +448,7 @@ int ion_system_contig_heap_cache_ops(struct ion_heap *heap,
 
 		pstart = virt_to_phys(buffer->priv_virt) + offset;
 		if (!pstart) {
-			WARN(1, "Could not do virt to phys translation on %p\n",
+			WARN(1, "Could not do virt to phys translation on %pK\n",
 				buffer->priv_virt);
 			return -EINVAL;
 		}
@@ -457,7 +461,7 @@ int ion_system_contig_heap_cache_ops(struct ion_heap *heap,
 
 static int ion_system_contig_print_debug(struct ion_heap *heap,
 					 struct seq_file *s,
-					 const struct list_head *unused)
+					 const struct rb_root *unused)
 {
 	seq_printf(s, "total bytes currently allocated: %lx\n",
 		(unsigned long) atomic_read(&system_contig_heap_allocated));
@@ -507,7 +511,7 @@ int ion_system_contig_heap_map_iommu(struct ion_buffer *buffer,
 	}
 	page = virt_to_page(buffer->vaddr);
 
-	sglist = kmalloc(sizeof(*sglist), GFP_KERNEL);
+	sglist = vmalloc(sizeof(*sglist));
 	if (!sglist)
 		goto out1;
 
@@ -517,25 +521,26 @@ int ion_system_contig_heap_map_iommu(struct ion_buffer *buffer,
 	ret = iommu_map_range(domain, data->iova_addr, sglist,
 			      buffer->size, prot);
 	if (ret) {
-		pr_err("%s: could not map %lx in domain %p\n",
+		pr_err("%s: could not map %lx in domain %pK\n",
 			__func__, data->iova_addr, domain);
 		goto out1;
 	}
 
 	if (extra) {
 		unsigned long extra_iova_addr = data->iova_addr + buffer->size;
-		ret = msm_iommu_map_extra(domain, extra_iova_addr, extra, SZ_4K,
-					  prot);
+		unsigned long phys_addr = sg_phys(sglist);
+		ret = msm_iommu_map_extra(domain, extra_iova_addr, phys_addr,
+					extra, SZ_4K, prot);
 		if (ret)
 			goto out2;
 	}
-	kfree(sglist);
+	vfree(sglist);
 	return ret;
 out2:
 	iommu_unmap_range(domain, data->iova_addr, buffer->size);
 
 out1:
-	kfree(sglist);
+	vfree(sglist);
 	msm_free_iova_address(data->iova_addr, domain_num, partition_num,
 						data->mapped_size);
 out:

@@ -99,7 +99,7 @@ static int ion_cma_allocate(struct ion_heap *heap, struct ion_buffer *buffer,
 
 	/* keep this for memory release */
 	buffer->priv_virt = info;
-	dev_dbg(dev, "Allocate buffer %p\n", buffer);
+	dev_dbg(dev, "Allocate buffer %pK\n", buffer);
 	return 0;
 
 err:
@@ -112,10 +112,9 @@ static void ion_cma_free(struct ion_buffer *buffer)
 	struct device *dev = buffer->heap->priv;
 	struct ion_cma_buffer_info *info = buffer->priv_virt;
 
-	dev_dbg(dev, "Release buffer %p\n", buffer);
+	dev_dbg(dev, "Release buffer %pK\n", buffer);
 	/* release memory */
 	dma_free_coherent(dev, buffer->size, info->cpu_addr, info->handle);
-	sg_free_table(info->table);
 	/* release sg table */
 	kfree(info->table);
 	kfree(info);
@@ -128,7 +127,7 @@ static int ion_cma_phys(struct ion_heap *heap, struct ion_buffer *buffer,
 	struct device *dev = heap->priv;
 	struct ion_cma_buffer_info *info = buffer->priv_virt;
 
-	dev_dbg(dev, "Return buffer %p physical address 0x%x\n", buffer,
+	dev_dbg(dev, "Return buffer %pK physical address 0x%x\n", buffer,
 		info->handle);
 
 	*addr = info->handle;
@@ -229,8 +228,9 @@ int ion_cma_map_iommu(struct ion_buffer *buffer,
 
 	extra_iova_addr = data->iova_addr + buffer->size;
 	if (extra) {
-		ret = msm_iommu_map_extra(domain, extra_iova_addr, extra, SZ_4K,
-						prot);
+		unsigned long phys_addr = sg_phys(table->sgl);
+		ret = msm_iommu_map_extra(domain, extra_iova_addr, phys_addr,
+					extra, SZ_4K, prot);
 		if (ret)
 			goto out2;
 	}
@@ -321,18 +321,21 @@ int ion_cma_cache_ops(struct ion_heap *heap,
 }
 
 static int ion_cma_print_debug(struct ion_heap *heap, struct seq_file *s,
-			const struct list_head *mem_map)
+			const struct rb_root *mem_map)
 {
 	if (mem_map) {
-		struct mem_map_data *data;
+		struct rb_node *n;
 
 		seq_printf(s, "\nMemory Map\n");
 		seq_printf(s, "%16.s %14.s %14.s %14.s\n",
 			   "client", "start address", "end address",
 			   "size (hex)");
 
-		list_for_each_entry(data, mem_map, node) {
+		for (n = rb_first(mem_map); n; n = rb_next(n)) {
+			struct mem_map_data *data =
+					rb_entry(n, struct mem_map_data, node);
 			const char *client_name = "(null)";
+
 
 			if (data->client_name)
 				client_name = data->client_name;

@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2012, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2011-2012,2016 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -17,7 +17,6 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/memory_alloc.h>
-#include <linux/fmem.h>
 #include <linux/of.h>
 #include <linux/mm.h>
 #include <linux/mm_types.h>
@@ -178,22 +177,9 @@ static void ion_set_base_address(struct ion_platform_heap *heap,
 			    struct ion_co_heap_pdata *co_heap_data,
 			    struct ion_cp_heap_pdata *cp_data)
 {
-	if (cp_data->reusable) {
-		const struct fmem_data *fmem_info = fmem_get_info();
-
-		if (!fmem_info) {
-			pr_err("fmem info pointer NULL!\n");
-			BUG();
-		}
-
-		heap->base = fmem_info->phys - fmem_info->reserved_size_low;
-		cp_data->virt_addr = fmem_info->virt;
-		pr_info("ION heap %s using FMEM\n", shared_heap->name);
-	} else {
-		heap->base = msm_ion_get_base(heap->size + shared_heap->size,
-						shared_heap->memory_type,
-						co_heap_data->align);
-	}
+	heap->base = msm_ion_get_base(heap->size + shared_heap->size,
+					shared_heap->memory_type,
+					co_heap_data->align);
 	if (heap->base) {
 		shared_heap->base = heap->base + heap->size;
 		cp_data->secure_base = heap->base;
@@ -219,15 +205,6 @@ static void allocate_co_memory(struct ion_platform_heap *heap,
 			struct ion_cp_heap_pdata *cp_data =
 			   (struct ion_cp_heap_pdata *) shared_heap->extra_data;
 			if (cp_data->fixed_position == FIXED_MIDDLE) {
-				const struct fmem_data *fmem_info =
-					fmem_get_info();
-
-				if (!fmem_info) {
-					pr_err("fmem info pointer NULL!\n");
-					BUG();
-				}
-
-				cp_data->virt_addr = fmem_info->virt;
 				if (!cp_data->secure_base) {
 					cp_data->secure_base = heap->base;
 					cp_data->secure_size =
@@ -279,17 +256,6 @@ static void msm_ion_allocate(struct ion_platform_heap *heap)
 			struct ion_cp_heap_pdata *data =
 				(struct ion_cp_heap_pdata *)
 				heap->extra_data;
-			if (data->reusable) {
-				const struct fmem_data *fmem_info =
-					fmem_get_info();
-				heap->base = fmem_info->phys;
-				data->virt_addr = fmem_info->virt;
-				pr_info("ION heap %s using FMEM\n", heap->name);
-			} else if (data->mem_is_fmem) {
-				const struct fmem_data *fmem_info =
-					fmem_get_info();
-				heap->base = fmem_info->phys + fmem_info->size;
-			}
 			align = data->align;
 			break;
 		}
@@ -575,18 +541,15 @@ static int check_vaddr_bounds(unsigned long start, unsigned long end)
 	if (end < start)
 		goto out;
 
-	down_read(&mm->mmap_sem);
 	vma = find_vma(mm, start);
 	if (vma && vma->vm_start < end) {
 		if (start < vma->vm_start)
-			goto out_up;
+			goto out;
 		if (end > vma->vm_end)
-			goto out_up;
+			goto out;
 		ret = 0;
 	}
 
-out_up:
-	up_read(&mm->mmap_sem);
 out:
 	return ret;
 }
@@ -604,6 +567,7 @@ static long msm_ion_custom_ioctl(struct ion_client *client,
 		unsigned long start, end;
 		struct ion_handle *handle = NULL;
 		int ret;
+		struct mm_struct *mm = current->active_mm;
 
 		if (copy_from_user(&data, (void __user *)arg,
 					sizeof(struct ion_flush_data)))
@@ -613,7 +577,7 @@ static long msm_ion_custom_ioctl(struct ion_client *client,
 		end = (unsigned long) data.vaddr + data.length;
 
 		if (start && check_vaddr_bounds(start, end)) {
-			pr_err("%s: virtual address %p is out of bounds\n",
+			pr_err("%s: virtual address %pK is out of bounds\n",
 				__func__, data.vaddr);
 			return -EINVAL;
 		}
@@ -627,10 +591,26 @@ static long msm_ion_custom_ioctl(struct ion_client *client,
 			}
 		}
 
+		down_read(&mm->mmap_sem);
+
+		start = (unsigned long) data.vaddr;
+		end = (unsigned long) data.vaddr + data.length;
+
+		if (check_vaddr_bounds(start, end)) {
+			up_read(&mm->mmap_sem);
+			pr_err("%s: virtual address %p is out of bounds\n",
+				__func__, data.vaddr);
+			if (!data.handle)
+				ion_free(client, handle);
+			return -EINVAL;
+		}
+
 		ret = ion_do_cache_op(client,
 				data.handle ? data.handle : handle,
 				data.vaddr, data.offset, data.length,
 				cmd);
+
+		up_read(&mm->mmap_sem);
 
 		if (!data.handle)
 			ion_free(client, handle);
